@@ -31,6 +31,7 @@ import tools.vitruv.framework.vsum.internal.VirtualModelImpl;
 import tools.vitruv.framework.vsum.internal.messages.ErrorMessages;
 import tools.vitruv.framework.vsum.persistence.ModelPersistence;
 import tools.vitruv.framework.vsum.persistence.StateBasedModelPersistence;
+import tools.vitruv.framework.vsum.persistence.delta.DeltaBasedModelPersistence;
 
 /** Builder for creating and initializing virtual models in the VSUM framework. */
 public class VirtualModelBuilder {
@@ -319,6 +320,27 @@ public class VirtualModelBuilder {
    */
   public VirtualModelBuilder withStateBasedPersistence() {
     return withModelPersistence(new StateBasedModelPersistence());
+  }
+
+  /**
+   * Stores the changes of every propagation in a log plus snapshots of the state, see {@link
+   * DeltaBasedModelPersistence}.
+   *
+   * @param options the snapshot interval and log options
+   * @return the builder instance
+   */
+  public VirtualModelBuilder withDeltaBasedPersistence(DeltaBasedModelPersistence.Options options) {
+    return withModelPersistence(new DeltaBasedModelPersistence(options));
+  }
+
+  /**
+   * Stores the changes of every propagation in a log plus snapshots of the state, with {@link
+   * DeltaBasedModelPersistence.Options#defaults()}.
+   *
+   * @return the builder instance
+   */
+  public VirtualModelBuilder withDeltaBasedPersistence() {
+    return withDeltaBasedPersistence(DeltaBasedModelPersistence.Options.defaults());
   }
 
   /**
