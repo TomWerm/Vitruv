@@ -36,8 +36,13 @@ public interface ModelPersistence {
    *
    * @param context the models of the virtual model
    * @param change the applied change
+   * @param appliedChange the same change, referencing the model elements, as returned by {@code
+   *     resolveAndApply}
    */
-  default void changeApplied(ModelPersistenceContext context, VitruviusChange<Uuid> change) {}
+  default void changeApplied(
+      ModelPersistenceContext context,
+      VitruviusChange<Uuid> change,
+      VitruviusChange<EObject> appliedChange) {}
 
   /**
    * Called after a consequential change was recorded and UUIDs were assigned to it.

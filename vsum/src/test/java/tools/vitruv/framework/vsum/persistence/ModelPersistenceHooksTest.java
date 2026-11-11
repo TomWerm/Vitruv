@@ -77,6 +77,8 @@ class ModelPersistenceHooksTest {
     assertEquals(
         List.of("load", "applied", "recorded", "finished", "save", "close"), persistence.events);
     assertSame(change, persistence.appliedChanges.get(0));
+    // The applied change with model elements is the one the propagation started from.
+    assertSame(result.get(0).getOriginalChange(), persistence.appliedEObjectChanges.get(0));
     assertSame(result, persistence.finishedPropagations.get(0));
     // The recorded changes are exactly the consequential changes of the propagation, in order.
     assertEquals(
@@ -98,6 +100,7 @@ class ModelPersistenceHooksTest {
   private static final class RecordingPersistence implements ModelPersistence {
     final List<String> events = new ArrayList<>();
     final List<VitruviusChange<Uuid>> appliedChanges = new ArrayList<>();
+    final List<VitruviusChange<EObject>> appliedEObjectChanges = new ArrayList<>();
     final List<TransactionalChange<EObject>> recordedChanges = new ArrayList<>();
     final List<VitruviusChange<Uuid>> recordedChangesWithIds = new ArrayList<>();
     final List<List<PropagatedChange>> finishedPropagations = new ArrayList<>();
@@ -108,9 +111,13 @@ class ModelPersistenceHooksTest {
     }
 
     @Override
-    public void changeApplied(ModelPersistenceContext context, VitruviusChange<Uuid> change) {
+    public void changeApplied(
+        ModelPersistenceContext context,
+        VitruviusChange<Uuid> change,
+        VitruviusChange<EObject> appliedChange) {
       events.add("applied");
       appliedChanges.add(change);
+      appliedEObjectChanges.add(appliedChange);
     }
 
     @Override

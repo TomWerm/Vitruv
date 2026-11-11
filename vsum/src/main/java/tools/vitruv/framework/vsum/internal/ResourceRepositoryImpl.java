@@ -179,7 +179,7 @@ class ResourceRepositoryImpl implements ModelRepository {
   @Override
   public VitruviusChange<EObject> applyChange(VitruviusChange<Uuid> change) {
     VitruviusChange<EObject> appliedChange = changeResolver.resolveAndApply(change);
-    modelPersistence.changeApplied(persistenceContext, change);
+    modelPersistence.changeApplied(persistenceContext, change, appliedChange);
     return appliedChange;
   }
 
