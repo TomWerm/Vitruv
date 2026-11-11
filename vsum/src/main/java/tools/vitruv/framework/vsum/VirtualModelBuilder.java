@@ -29,6 +29,8 @@ import tools.vitruv.framework.vsum.internal.ConstraintCheckerRegistry;
 import tools.vitruv.framework.vsum.internal.InternalVirtualModel;
 import tools.vitruv.framework.vsum.internal.VirtualModelImpl;
 import tools.vitruv.framework.vsum.internal.messages.ErrorMessages;
+import tools.vitruv.framework.vsum.persistence.ModelPersistence;
+import tools.vitruv.framework.vsum.persistence.StateBasedModelPersistence;
 
 /** Builder for creating and initializing virtual models in the VSUM framework. */
 public class VirtualModelBuilder {
@@ -41,6 +43,7 @@ public class VirtualModelBuilder {
   private Path storageFolder;
   private InternalUserInteractor userInteractor;
   private boolean constraintValidationAfterPropagation;
+  private ModelPersistence modelPersistence = new StateBasedModelPersistence();
 
   /**
    * Sets the storage folder for the virtual model.
@@ -297,6 +300,28 @@ public class VirtualModelBuilder {
   }
 
   /**
+   * Sets the strategy that loads and stores the models, UUIDs and correspondences of the virtual
+   * model. The last strategy set wins. Defaults to {@link #withStateBasedPersistence()}.
+   *
+   * @param modelPersistence the persistence strategy, used for this virtual model only
+   * @return the builder instance
+   */
+  public VirtualModelBuilder withModelPersistence(ModelPersistence modelPersistence) {
+    this.modelPersistence = checkNotNull(modelPersistence, ErrorMessages.MODEL_PERSISTENCE_NULL);
+    return this;
+  }
+
+  /**
+   * Stores the complete state of the virtual model after every propagation, see {@link
+   * StateBasedModelPersistence}. This is the default.
+   *
+   * @return the builder instance
+   */
+  public VirtualModelBuilder withStateBasedPersistence() {
+    return withModelPersistence(new StateBasedModelPersistence());
+  }
+
+  /**
    * Builds and initializes the virtual model.
    *
    * @return the initialized virtual model
@@ -321,7 +346,8 @@ public class VirtualModelBuilder {
             userInteractor,
             viewTypeRepository,
             changeSpecificationRepository,
-            constraintCheckerRegistry);
+            constraintCheckerRegistry,
+            modelPersistence);
     vsum.loadExistingModels();
     vsum.loadConstraints();
     vsum.setConstraintValidationAfterPropagation(constraintValidationAfterPropagation);

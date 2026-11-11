@@ -3,7 +3,6 @@ package tools.vitruv.framework.vsum.persistence;
 import static edu.kit.ipd.sdq.commons.util.org.eclipse.emf.ecore.resource.ResourceSetUtil.withGlobalFactories;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static tools.vitruv.change.testutils.metamodels.AllElementTypesCreators.aet;
-import static tools.vitruv.framework.vsum.VirtualModelTestUtil.createAndLoadTestVirtualModelWithConsistencyPreservation;
 import static tools.vitruv.framework.vsum.VirtualModelTestUtil.createTestModelResourceUri;
 import static tools.vitruv.framework.vsum.VirtualModelTestUtil.recordChanges;
 
@@ -27,6 +26,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import tools.vitruv.change.atomic.uuid.UuidResolver;
 import tools.vitruv.change.testutils.TestProject;
 import tools.vitruv.change.testutils.TestProjectManager;
+import tools.vitruv.framework.vsum.VirtualModelTestUtil;
 import tools.vitruv.framework.vsum.internal.InternalVirtualModel;
 
 /**
@@ -36,14 +36,14 @@ import tools.vitruv.framework.vsum.internal.InternalVirtualModel;
  * <p>The expected files were recorded with the persistence code before it was extracted into a
  * strategy (system property {@code vitruv.persistence.recordGolden} set to a folder records them
  * again). UUIDs are random and the project folder differs per run, so the comparison replaces both
- * with placeholders (a UUID by the path of its element), unifies line endings and sorts the lines of {@code uuid.uuid}, whose order
- * comes from a hash map. Everything else must match byte for byte.
+ * with placeholders (a UUID by the path of its element), unifies line endings and sorts the lines
+ * of {@code uuid.uuid}, whose order comes from a hash map. Everything else must match byte for
+ * byte. {@code constraints.properties} is left out: the constraint store writes it, with a date.
  */
 @ExtendWith(TestProjectManager.class)
 class StateBasedModelPersistenceTest {
   private static final String GOLDEN_RESOURCE_FOLDER = "persistence/state-based/";
   private static final String UUIDS_FILE = "vsum/uuid.uuid";
-  // Written by the constraint store, not by model persistence, and carries a timestamp.
   private static final Set<String> IGNORED_FILES = Set.of("vsum/constraints.properties");
 
   @Test
@@ -52,7 +52,8 @@ class StateBasedModelPersistenceTest {
     Path vsumFolder = projectFolder.resolve("vsum");
     var virtualModel =
         (InternalVirtualModel)
-            createAndLoadTestVirtualModelWithConsistencyPreservation(vsumFolder);
+            VirtualModelTestUtil.createAndLoadTestVirtualModelWithConsistencyPreservation(
+                vsumFolder);
     ResourceSet resourceSet = withGlobalFactories(new ResourceSetImpl());
     UuidResolver uuidResolver = UuidResolver.create(resourceSet);
     URI modelUri = createTestModelResourceUri(vsumFolder, "");
