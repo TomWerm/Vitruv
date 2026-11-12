@@ -212,8 +212,12 @@ class DeltaBasedModelPersistenceTest {
     assertFalse(expected.containsKey("root2.allElementTypes"), "the deleted root's model is gone");
     assertTrue(expected.containsKey("root2Copy.allElementTypes"), "consequential model");
     assertEquals(expected, modelFiles(deltaFolder), "snapshot equals state-based files");
+    String expectedCorrespondences = correspondences(stateFolder);
+    assertTrue(expectedCorrespondences.contains("rootCopy.allElementTypes"), "has correspondences");
+    assertFalse(expectedCorrespondences.contains("root2"), "the deleted root's one is dropped");
+    assertEquals(expectedCorrespondences, correspondences(deltaFolder), "snapshot correspondences");
 
-    // Rebuild from the log alone: no snapshot, no model files.
+    // Rebuild from the log alone: no snapshot, no model files, no correspondences.
     Path rebuiltFolder = project.resolve("rebuilt");
     copyFolder(deltaFolder, rebuiltFolder);
     deleteSnapshot(rebuiltFolder);
@@ -227,9 +231,125 @@ class DeltaBasedModelPersistenceTest {
         Files.readString(deltaFolder.resolve("vsum/snapshot/uuid.uuid")),
         Files.readString(rebuiltFolder.resolve("vsum/snapshot/uuid.uuid")),
         "replay restores the same UUIDs");
+    assertEquals(
+        expectedCorrespondences, correspondences(rebuiltFolder), "replay restores correspondences");
+  }
+
+  static final String CORRESPONDENCES = "vsum/correspondences.correspondence";
+
+  /** The correspondence file of a folder, line endings unified. */
+  static String correspondences(Path folder) throws IOException {
+    return Files.readString(folder.resolve(CORRESPONDENCES), UTF_8).replace("\r\n", "\n");
+  }
+
+  @Test
+  @DisplayName("correspondence edits are logged and replayed, also between propagations")
+  void correspondenceEditsAreReplayed(@TestProject Path project) throws Exception {
+    Path folder = project.resolve("open");
+    InternalVirtualModel open = vsum(folder, delta(1000));
+    Client client = new Client(folder);
+    Root root = aet.Root();
+    open.propagateChange(
+        client.record(
+            () -> {
+              root.setId("root");
+              client.createResource(MODEL).getContents().add(root);
+            }));
+    Root vsumRoot = rootOf(open, folder, MODEL);
+    Root vsumCopy = rootOf(open, folder, MODEL_COPY);
+    open.getCorrespondenceModel().addCorrespondenceBetween(vsumRoot, vsumCopy, "manual");
+    open.getCorrespondenceModel().removeCorrespondencesBetween(vsumRoot, vsumCopy, null);
+    open.getCorrespondenceModel().addCorrespondenceBetween(vsumCopy, vsumRoot, "reverse");
+    open.propagateChange(client.record(() -> root.setSingleValuedEAttribute(1)));
+    open.getCorrespondenceModel().removeCorrespondencesBetween(vsumCopy, vsumRoot, "reverse");
+    open.propagateChange(client.record(() -> root.setSingleValuedEAttribute(2)));
+    Path crashed = project.resolve("crashed");
+    copyFolder(folder, crashed);
+    open.dispose();
+
+    List<ChangeLog.Entry> entries = new ChangeLog(crashed.resolve(LOG), false).read();
+    assertEquals(3, entries.size());
+    assertEquals(
+        List.of("insert 0 null"), operations(entries.get(0)), "the reaction's correspondence");
+    assertEquals(
+        List.of("remove 0 -", "insert 0 manual", "insert 1 reverse"),
+        operations(entries.get(1)),
+        "edits between propagations go into the next record");
+    assertEquals(List.of("remove 1 -"), operations(entries.get(2)));
+    Map<String, Object> insert = entries.get(1).correspondenceOperations().get(1);
+    assertEquals(
+        "http://vitruv.tools/metamodels/change/correspondence/1.0#//ManualCorrespondence",
+        insert.get(CorrespondenceLog.TYPE));
+    assertTrue(
+        ((List<?>) insert.get(CorrespondenceLog.LEFT)).get(0).toString().startsWith(MODEL + "#/|u="),
+        insert.toString());
+    assertFalse(Files.exists(crashed.resolve(CORRESPONDENCES)), "written with snapshots only");
+
+    DeltaBasedModelPersistence persistence = delta(1000);
+    InternalVirtualModel reopened = vsum(crashed, persistence);
+    assertEquals(0, persistence.getSnapshotRecord());
+    Root reopenedRoot = rootOf(reopened, crashed, MODEL);
+    Root reopenedCopy = rootOf(reopened, crashed, MODEL_COPY);
+    assertEquals(
+        java.util.Set.of(reopenedCopy),
+        reopened.getCorrespondenceModel().getCorrespondingEObjects(reopenedRoot, "manual"));
+    assertEquals(
+        java.util.Set.of(reopenedCopy),
+        reopened.getCorrespondenceModel().getCorrespondingEObjects(reopenedRoot, null),
+        "the removed correspondences stay removed");
+    reopened.dispose();
+  }
+
+  /** The correspondence operations of a record as {@code "<op> <index> <tag>"}. */
+  static List<String> operations(ChangeLog.Entry entry) {
+    return entry.correspondenceOperations().stream()
+        .map(
+            it -> {
+              Object tag = "-";
+              if (it.get(CorrespondenceLog.ATTRIBUTES) instanceof Map<?, ?> attributes) {
+                tag = attributes.get("tag");
+              } else if (CorrespondenceLog.INSERT.equals(it.get(CorrespondenceLog.OP))) {
+                tag = null;
+              }
+              return it.get(CorrespondenceLog.OP) + " " + it.get(CorrespondenceLog.INDEX) + " "
+                  + tag;
+            })
+        .toList();
+  }
+
+  @Test
+  @DisplayName("records without correspondences (written before) use the correspondence file")
+  void recordsWithoutCorrespondencesAreRead(@TestProject Path project) throws Exception {
+    Path stateFolder = project.resolve("state");
+    InternalVirtualModel stateVsum = vsum(stateFolder, new StateBasedModelPersistence());
+    runScenario(stateVsum, stateFolder);
+    stateVsum.dispose();
+
+    Path folder = project.resolve("open");
+    InternalVirtualModel open = vsum(folder, delta(1000));
+    runScenario(open, folder);
+    Path old = project.resolve("old");
+    copyFolder(folder, old);
+    open.dispose();
+    // What the first version of the log left: no correspondences in the records, the
+    // correspondence file as after the last record.
+    List<String> lines = new ArrayList<>();
+    for (String line : Files.readAllLines(old.resolve(LOG), UTF_8)) {
+      lines.add(line.replaceFirst(",\"correspondences\":(\\[.*\\]|\"[^\"]*\")}$", "}"));
+    }
+    assertTrue(lines.stream().noneMatch(it -> it.contains("correspondences")));
+    Files.write(old.resolve(LOG), lines, UTF_8);
+    Files.copy(stateFolder.resolve(CORRESPONDENCES), old.resolve(CORRESPONDENCES));
+
+    DeltaBasedModelPersistence persistence = delta(1000);
+    InternalVirtualModel reopened = vsum(old, persistence);
+    assertEquals(10, persistence.getSnapshotRecord(), "converted by a snapshot");
+    reopened.dispose();
+    assertEquals(correspondences(stateFolder), correspondences(old));
   }
 
   static void deleteSnapshot(Path folder) throws IOException {
+    Files.deleteIfExists(folder.resolve(CORRESPONDENCES));
     try (Stream<Path> files = Files.walk(folder.resolve("vsum/snapshot"))) {
       for (Path file : files.sorted(java.util.Comparator.reverseOrder()).toList()) {
         Files.delete(file);

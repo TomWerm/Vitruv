@@ -21,7 +21,8 @@ import org.apache.logging.log4j.Logger;
  * The change log {@code vsum/changes.log}: one JSON record per propagation and line, appended,
  * never rewritten. A record reads
  *
- * <pre>{"seq":7,"tx":"&lt;uuid&gt;","time":"&lt;ISO-8601&gt;","original":P,"consequential":P}</pre>
+ * <pre>{"seq":7,"tx":"&lt;uuid&gt;","time":"&lt;ISO-8601&gt;","original":P,"consequential":P,
+ *   "correspondences":C}</pre>
  *
  * <p>{@code seq} counts the propagations of the virtual model from 1. {@code original} holds the
  * propagated change, {@code consequential} the changes recorded while propagating it, both in
@@ -29,6 +30,11 @@ import org.apache.logging.log4j.Logger;
  * the Deltachain schema ({@link EChangeJson}), either as that JSON array or, if it is smaller so,
  * as the Base64 string of its {@link PayloadCodec} form ({@code 0x01} + DEFLATE against dictionary
  * v1).
+ *
+ * <p>{@code C} lists the changes of the correspondence model in that propagation as operations on
+ * its list of correspondences ({@link CorrespondenceLog}), stored like {@code P}. Records written
+ * before correspondences were logged lack it; their correspondences are only in the state-based
+ * file.
  *
  * <p>Reading tolerates a torn last line (the process died while appending): it is moved to a side
  * file {@code changes.log.torn-<millis>} and cut from the log, so that the next record starts on a
@@ -41,6 +47,7 @@ final class ChangeLog {
   static final String TIME = "time";
   static final String ORIGINAL = "original";
   static final String CONSEQUENTIAL = "consequential";
+  static final String CORRESPONDENCES = "correspondences";
 
   private static final Logger LOGGER = LogManager.getLogger(ChangeLog.class);
 
@@ -71,14 +78,31 @@ final class ChangeLog {
    * @param time the time of the propagation
    * @param original the stored payload of the propagated change
    * @param consequential the stored payload of the consequential changes
+   * @param correspondences the stored payload of the correspondence changes, null in records
+   *     written before correspondences were logged
    */
-  record Entry(int line, long seq, String tx, String time, Object original, Object consequential) {
+  record Entry(
+      int line,
+      long seq,
+      String tx,
+      String time,
+      Object original,
+      Object consequential,
+      Object correspondences) {
     List<List<Map<String, Object>>> originalGroups() {
       return decode(original, line);
     }
 
     List<List<Map<String, Object>>> consequentialGroups() {
       return decode(consequential, line);
+    }
+
+    boolean hasCorrespondences() {
+      return correspondences != null;
+    }
+
+    List<Map<String, Object>> correspondenceOperations() {
+      return decodeList(correspondences, line);
     }
   }
 
@@ -165,7 +189,13 @@ final class ChangeLog {
       throw new IllegalArgumentException("record without seq, original or consequential");
     }
     return new Entry(
-        line, number, (String) json.get(TX), (String) json.get(TIME), original, consequential);
+        line,
+        number,
+        (String) json.get(TX),
+        (String) json.get(TIME),
+        original,
+        consequential,
+        json.get(CORRESPONDENCES));
   }
 
   /**
@@ -176,6 +206,7 @@ final class ChangeLog {
    * @param time the time of the propagation
    * @param original the propagated change as transactional changes in JSON
    * @param consequential the consequential changes as transactional changes in JSON
+   * @param correspondences the changes of the correspondence model as operations in JSON
    * @return the number of bytes appended
    * @throws IOException if the record cannot be written
    */
@@ -184,7 +215,8 @@ final class ChangeLog {
       String tx,
       String time,
       List<List<Map<String, Object>>> original,
-      List<List<Map<String, Object>>> consequential)
+      List<List<Map<String, Object>>> consequential,
+      List<Map<String, Object>> correspondences)
       throws IOException {
     Map<String, Object> record = new LinkedHashMap<>();
     record.put(SEQ, seq);
@@ -192,6 +224,7 @@ final class ChangeLog {
     record.put(TIME, time);
     record.put(ORIGINAL, encode(original));
     record.put(CONSEQUENTIAL, encode(consequential));
+    record.put(CORRESPONDENCES, encode(correspondences));
     byte[] line = (Json.write(record) + "\n").getBytes(UTF_8);
     try (FileChannel channel =
         FileChannel.open(
@@ -220,10 +253,10 @@ final class ChangeLog {
   }
 
   /**
-   * Encodes transactional changes for a record: the JSON array, or the Base64 string of its
-   * compressed form if that is shorter.
+   * Encodes a list for a record (transactional changes or correspondence operations): the JSON
+   * array, or the Base64 string of its compressed form if that is shorter.
    */
-  static Object encode(List<List<Map<String, Object>>> groups) {
+  static Object encode(List<?> groups) {
     byte[] json = Json.write(groups).getBytes(UTF_8);
     byte[] payload = PayloadCodec.encode(json);
     if (payload == json) {
@@ -233,17 +266,29 @@ final class ChangeLog {
     return base64.length() < json.length ? base64 : groups;
   }
 
+  /** Decodes correspondence operations stored by {@link #encode}. */
+  @SuppressWarnings("unchecked")
+  static List<Map<String, Object>> decodeList(Object stored, int line) {
+    Object operations = stored instanceof String base64 ? inflate(base64, line) : stored;
+    if (!(operations instanceof List<?> list) || !list.stream().allMatch(Map.class::isInstance)) {
+      throw new IllegalStateException(
+          "changes.log line " + line + ": correspondences are not a list of operations");
+    }
+    return (List<Map<String, Object>>) list;
+  }
+
+  private static Object inflate(String base64, int line) {
+    try {
+      return Json.parse(
+          new String(PayloadCodec.toJson(Base64.getDecoder().decode(base64)), UTF_8));
+    } catch (IOException | IllegalArgumentException e) {
+      throw new IllegalStateException("changes.log line " + line + ": " + e.getMessage(), e);
+    }
+  }
+
   @SuppressWarnings("unchecked")
   static List<List<Map<String, Object>>> decode(Object stored, int line) {
-    Object groups = stored;
-    if (stored instanceof String base64) {
-      try {
-        groups = Json.parse(new String(PayloadCodec.toJson(Base64.getDecoder().decode(base64)),
-            UTF_8));
-      } catch (IOException | IllegalArgumentException e) {
-        throw new IllegalStateException("changes.log line " + line + ": " + e.getMessage(), e);
-      }
-    }
+    Object groups = stored instanceof String base64 ? inflate(base64, line) : stored;
     if (!(groups instanceof List<?> list)
         || !list.stream().allMatch(group -> group instanceof List<?> changes
             && changes.stream().allMatch(Map.class::isInstance))) {

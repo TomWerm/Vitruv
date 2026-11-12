@@ -20,7 +20,8 @@ import tools.vitruv.framework.vsum.persistence.ModelPersistenceContext;
 
 /**
  * Snapshots of the delta-based persistence, in {@code vsum/snapshot/}: the models as XMI at their
- * own URIs (as state-based persistence stores them), {@code models.models} and {@code uuid.uuid}
+ * own URIs (as state-based persistence stores them), {@code correspondences.correspondence} at its
+ * own URI, {@code models.models} and {@code uuid.uuid}
  * with URIs relative to the storage folder, and {@code snapshot.properties} with {@code seq}, the
  * last log record the snapshot contains.
  *
@@ -104,9 +105,16 @@ final class Snapshots {
    * @param ids converts absolute URIs
    * @param folder the snapshot folder
    * @param seq the last log record the state contains
+   * @param correspondences the resource of the correspondence model, written with the snapshot;
+   *     null if there is none
    * @throws IOException if a file cannot be written
    */
-  static void write(ModelPersistenceContext context, ElementIds ids, Path folder, long seq)
+  static void write(
+      ModelPersistenceContext context,
+      ElementIds ids,
+      Path folder,
+      long seq,
+      Resource correspondences)
       throws IOException {
     Files.createDirectories(folder);
     List<Path[]> moves = new ArrayList<>();
@@ -132,6 +140,15 @@ final class Snapshots {
         resource.save(null); // not atomic: no file system path outside Eclipse
         saved.add(resource);
       }
+    }
+    if (correspondences != null && correspondences.getURI().isFile()) {
+      ByteArrayOutputStream content = new ByteArrayOutputStream();
+      correspondences.save(content, null);
+      Path target = Path.of(correspondences.getURI().toFileString());
+      Files.createDirectories(target.getParent());
+      moves.add(new Path[] {writeTemp(target, content.toByteArray()), target});
+    } else if (correspondences != null) {
+      correspondences.save(null); // not atomic: no file system path outside Eclipse
     }
     Path absoluteUuids = folder.resolve(UUIDS + ".absolute" + TEMP_SUFFIX);
     context.getUuidResolver().storeAtUri(URI.createFileURI(absoluteUuids.toString()));

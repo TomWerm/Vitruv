@@ -45,8 +45,11 @@ import tools.vitruv.framework.vsum.persistence.ModelPersistenceContext;
  *       propagations, on {@link #close}, and on {@link #compact()}. The log is never truncated.
  *   <li>Loading reads the latest snapshot and replays the log records after it, resolving elements
  *       by UUID.
- *   <li>Correspondences are stored state-based after every propagation, as with {@link
- *       tools.vitruv.framework.vsum.persistence.StateBasedModelPersistence}.
+ *   <li>The changes of the correspondence model go into the same record ({@link
+ *       CorrespondenceLog}); {@code correspondences.correspondence} is written with each snapshot
+ *       only. Records of logs written before (without correspondences) are replayed with the
+ *       correspondence file as the state after the last record, and a snapshot is written right
+ *       away.
  * </ul>
  *
  * <p>A folder with state-based files ({@code models.models}) but neither snapshot nor log is
@@ -103,6 +106,7 @@ public class DeltaBasedModelPersistence implements ModelPersistence {
   private ModelPersistenceContext context;
   private ElementIds ids;
   private ChangeLog log;
+  private CorrespondenceLog correspondences;
   private Path snapshotFolder;
   private long lastSeq;
   private long snapshotSeq;
@@ -138,11 +142,13 @@ public class DeltaBasedModelPersistence implements ModelPersistence {
     ids = new ElementIds(layout.getVsumProjectFolder());
     log = new ChangeLog(vsumFolder.resolve(ChangeLog.FILE_NAME), options.syncLog());
     snapshotFolder = vsumFolder.resolve(Snapshots.FOLDER);
+    correspondences = new CorrespondenceLog(context, ids);
     try {
       Snapshots.recover(snapshotFolder);
       snapshotSeq = Snapshots.read(context, ids, snapshotFolder);
       List<ChangeLog.Entry> entries = log.read();
       boolean adopt = false;
+      boolean legacy = false;
       if (snapshotSeq < 0) {
         snapshotSeq = 0;
         if (Files.exists(layout.getModelsNamesFilesPath())) {
@@ -155,6 +161,24 @@ public class DeltaBasedModelPersistence implements ModelPersistence {
           adopt = true;
         }
       }
+      List<ChangeLog.Entry> tail = entries.stream().filter(it -> it.seq() > snapshotSeq).toList();
+      if (!tail.isEmpty() && tail.stream().noneMatch(ChangeLog.Entry::hasCorrespondences)) {
+        legacy = true; // the correspondence file holds the state after the last record
+      } else {
+        tail.stream()
+            .filter(it -> !it.hasCorrespondences())
+            .findFirst()
+            .ifPresent(
+                it -> {
+                  throw new IllegalStateException(
+                      log.file() + " line " + it.line() + ": record " + it.seq()
+                          + " has no correspondences, but other records after the snapshot do");
+                });
+        // the correspondence file holds the snapshot's state; hrefs are positional in it
+        context
+            .getCorrespondenceModel()
+            .loadSerializedCorrespondences(context.getModelsResourceSet());
+      }
       Set<URI> registered = new HashSet<>();
       context.getModelsResourceSet().getResources().forEach(it -> registered.add(it.getURI()));
       lastSeq = replay(context, entries);
@@ -164,12 +188,18 @@ public class DeltaBasedModelPersistence implements ModelPersistence {
           context.registerModel(uri);
         }
       }
-      context
-          .getCorrespondenceModel()
-          .loadSerializedCorrespondences(context.getModelsResourceSet());
+      if (legacy) {
+        context
+            .getCorrespondenceModel()
+            .loadSerializedCorrespondences(context.getModelsResourceSet());
+      }
+      correspondences.reset();
       this.context = context;
       if (adopt) {
         LOGGER.info("Adopting the state-based files in {} as first snapshot", vsumFolder);
+        writeSnapshot();
+      } else if (legacy) {
+        LOGGER.info("{} has records without correspondences; writing a snapshot", log.file());
         writeSnapshot();
       }
     } catch (IOException e) {
@@ -221,6 +251,9 @@ public class DeltaBasedModelPersistence implements ModelPersistence {
         }
         for (List<Map<String, Object>> group : entry.consequentialGroups()) {
           apply(context, resolver, group);
+        }
+        if (entry.hasCorrespondences()) {
+          correspondences.apply(entry.correspondenceOperations());
         }
       } catch (RuntimeException e) {
         throw new IllegalStateException(
@@ -351,11 +384,11 @@ public class DeltaBasedModelPersistence implements ModelPersistence {
                 UUID.randomUUID().toString(),
                 Instant.now().toString(),
                 pending.original,
-                pending.consequential);
+                pending.consequential,
+                correspondences.diff());
         lastSeq = seq;
         pending = null;
       }
-      context.getCorrespondenceModel().save();
       if (compactRequested || lastSeq - snapshotSeq >= options.snapshotInterval()) {
         writeSnapshot();
       }
@@ -424,7 +457,10 @@ public class DeltaBasedModelPersistence implements ModelPersistence {
   }
 
   private void writeSnapshot() throws IOException {
-    Snapshots.write(context, ids, snapshotFolder, lastSeq);
+    // Outside a propagation the correspondences may have changed without a record; the snapshot
+    // stores them (pruned) all the same, as state-based persistence does on its next save.
+    correspondences.diff();
+    Snapshots.write(context, ids, snapshotFolder, lastSeq, correspondences.resource());
     snapshotSeq = lastSeq;
     compactRequested = false;
     LOGGER.debug("Wrote snapshot at record {}", lastSeq);
